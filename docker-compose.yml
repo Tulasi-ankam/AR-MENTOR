@@ -1,0 +1,105 @@
+version: '3.9'
+
+services:
+  # ── PostgreSQL Database ──────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: ar-mentor-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ar_mentor
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-armentor2024}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./server/src/db/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis Cache ───────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: ar-mentor-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Node.js API Server ────────────────────────────────────────
+  api:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: ar-mentor-api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ar_mentor
+      DB_USER: postgres
+      DB_PASS: ${DB_PASSWORD:-armentor2024}
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-change-this-in-production}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      CLIENT_URL: ${CLIENT_URL:-http://localhost:3000}
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./uploads:/app/uploads
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── React Frontend ────────────────────────────────────────────
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${API_URL:-http://localhost:3001}
+    container_name: ar-mentor-client
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+
+  # ── Nginx Reverse Proxy ───────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: ar-mentor-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - api
+      - client
+
+volumes:
+  postgres_data:
+  redis_data:
